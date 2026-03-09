@@ -1,6 +1,6 @@
 # Base nginx Docker image for Drake Apps
 
-This is a base nginx docker image used for multiple
+This is a base nginx docker image used for nearly all of my nginx deployments.
 
 ## Differences between this and base nginx:alpine
 
@@ -29,36 +29,32 @@ COPY --from=build /build/dist /usr/share/nginx/html/
 ### A more extended `pnpm` version that is used in production
 
 ```Dockerfile
-FROM node:24-slim AS base
-
+FROM --platform=$BUILDPLATFORM node:24-slim AS base
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
 RUN corepack enable
-
 WORKDIR /build
 
-COPY font-awesome/ /build/font-awesome/
-
-COPY package.json .
-COPY pnpm-lock.yaml .
-COPY tsconfig.json .
-COPY tsconfig.node.json .
-
-FROM base AS build
+FROM base AS deps
+COPY package.json pnpm-lock.yaml tsconfig.json tsconfig.node.json ./
+COPY font-awesome/ ./font-awesome/ 
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile
 
-COPY index.html .
-COPY index.tsx .
-COPY index.scss .
-COPY shared shared
-COPY static static
-COPY components components
-COPY src src
-COPY types types
+FROM base AS build
+
+COPY --from=deps /build/node_modules ./node_modules
+
+COPY package.json pnpm-lock.yaml tsconfig.json tsconfig.node.json ./
+
+COPY index.html index.tsx index.scss ./
+COPY shared/ shared/
+COPY static/ static/
+COPY components/ components/
+COPY src/ src/
+COPY types/ types/
 
 RUN pnpm run build
 
 FROM ghcr.io/drakeapps/nginx:latest
-
 COPY --from=build /build/dist /usr/share/nginx/html/
 ```
