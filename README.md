@@ -9,6 +9,25 @@ This is a base nginx docker image used for nearly all of my nginx deployments.
 3. Blocks hidden / dot files
 4. Resolves real client IP from Cloudflare's `CF-Connecting-IP` header
 5. Logs the requested hostname (`$host`) in the access log for multi-site visibility
+6. Brotli and gzip compression enabled by default, including precompressed assets
+
+## Compression
+
+Brotli and gzip are both on by default, configured at the `http` level in `nginx.conf`, so every server block inherits them:
+
+- `brotli on` / `gzip on` at compression level 5, for responses of at least 256 bytes
+- Matching type lists covering HTML, CSS, JS, JSON, XML, SVG, WASM, plain text and font files. Already-compressed formats (jpg, png, webp, woff2, ...) are excluded — recompressing them costs CPU and saves nothing
+- `Vary: Accept-Encoding` on compressed responses
+- `brotli_static on` / `gzip_static on`, so a prebuilt `app.js.br` or `app.js.gz` sitting next to `app.js` is served as-is instead of being compressed on every request. Clients that accept both get the Brotli file
+
+Brotli is not part of the official nginx image, so the `Dockerfile` builds [`google/ngx_brotli`](https://github.com/google/ngx_brotli) as dynamic modules in a builder stage against the same nginx version, then copies the two `.so` files into the final image. libbrotli is linked statically, so nothing extra is installed at runtime. The modules are loaded at the top of `nginx.conf`:
+
+```nginx
+load_module modules/ngx_http_brotli_filter_module.so;
+load_module modules/ngx_http_brotli_static_module.so;
+```
+
+To turn compression off (or tune it) for a specific service, override it in your own server or location block, e.g. `brotli off; gzip off;`.
 
 ## Cloudflare logging
 
@@ -18,7 +37,7 @@ The main `nginx.conf` is configured at the `http` level with:
 - `real_ip_header CF-Connecting-IP` so `$remote_addr` reflects the actual client IP
 - A `cloudflare` log format that appends the requested `$host` to each log line
 
-Since these are set at the `http` level, all server blocks in `/etc/nginx/conf.d/` inherit them automatically — including any custom configs you bring in.
+Since these are set at the `http` level, all server blocks in `/etc/nginx/conf.d/` inherit them automatically — including any custom configs you bring in. The same applies to the compression settings above.
 
 ## Custom server config
 
