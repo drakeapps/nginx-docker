@@ -7,6 +7,8 @@ on:
     paths:
       - "Dockerfile"
       - "nginx.conf"
+      - "default.conf"
+      - "docker-entrypoint.d/**"
       - "CURRENT_VERSION"
       - ".github/workflows/build-nginx.yml"
   workflow_dispatch:
