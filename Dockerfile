@@ -38,3 +38,8 @@ RUN rm -rf /usr/share/nginx/html/*
 
 COPY nginx.conf /etc/nginx/nginx.conf
 COPY default.conf /etc/nginx/conf.d/default.conf
+
+# Startup hooks. The official entrypoint runs every *.sh in this directory
+# before starting nginx, which is how CLOUDFLARE_TUNNEL is applied.
+COPY docker-entrypoint.d/ /docker-entrypoint.d/
+RUN chmod +x /docker-entrypoint.d/*.sh

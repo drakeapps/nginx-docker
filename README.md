@@ -10,6 +10,7 @@ This is a base nginx docker image used for nearly all of my nginx deployments.
 4. Resolves real client IP from Cloudflare's `CF-Connecting-IP` header
 5. Logs the requested hostname (`$host`) in the access log for multi-site visibility
 6. Brotli and gzip compression enabled by default, including precompressed assets
+7. Optional `CLOUDFLARE_TUNNEL` mode for origins reached through a Cloudflare Tunnel
 
 ## Compression
 
@@ -38,6 +39,34 @@ The main `nginx.conf` is configured at the `http` level with:
 - A `cloudflare` log format that appends the requested `$host` to each log line
 
 Since these are set at the `http` level, all server blocks in `/etc/nginx/conf.d/` inherit them automatically — including any custom configs you bring in. The same applies to the compression settings above.
+
+## Behind a Cloudflare Tunnel
+
+The ranges above are Cloudflare's *edge*, which is what connects to the origin when the DNS record is proxied straight through. **Behind a Cloudflare Tunnel it is `cloudflared` that connects to nginx**, from the docker bridge gateway, a sibling container, or loopback — never a Cloudflare address. So `set_real_ip_from` never matches, the realip module never fires, and `$remote_addr` is the tunnel for every single request.
+
+The symptoms are easy to miss until they matter: the access log shows one address (`172.17.0.1`, `192.168.x.1`) for the whole internet, and anything keyed on `$remote_addr` — `limit_req`, `limit_conn`, `geo`, `allow`/`deny` — collapses the entire internet into one bucket. A per-IP rate limit configured that way throttles all of your users together the moment any traffic spike arrives.
+
+Set `CLOUDFLARE_TUNNEL=1` on the container to also trust the local hop:
+
+```yaml
+services:
+  web:
+    image: ghcr.io/drakeapps/nginx:latest
+    environment:
+      - CLOUDFLARE_TUNNEL=1
+```
+
+A startup hook then writes `/etc/nginx/conf.d/00-cloudflare-tunnel-realip.conf` trusting loopback, the RFC1918 ranges and the IPv6 ULA range:
+
+```
+127.0.0.1/32  ::1/128  10.0.0.0/8  172.16.0.0/12  192.168.0.0/16  fc00::/7
+```
+
+Override the list with `CLOUDFLARE_TUNNEL_TRUSTED` (space- or comma-separated CIDRs) to trust only the network you actually use, e.g. `CLOUDFLARE_TUNNEL_TRUSTED=172.18.0.0/16`. These are *added* to the Cloudflare edge ranges rather than replacing them, so an origin that is reachable both ways keeps working.
+
+> **This is opt-in on purpose.** Trusting a private peer means anything that can reach nginx from one of those ranges can forge `CF-Connecting-IP` and claim to be any client it likes. That is fine when the tunnel is the only route in. It is **not** fine when the container's port is also published to a LAN, or when another reverse proxy on the same host can reach it — there, narrow `CLOUDFLARE_TUNNEL_TRUSTED` to the tunnel's own address, or leave the mode off.
+
+Verify it took effect by checking a log line's first field after a request through the tunnel: it should be the browser's public IP, not a `172.x`/`192.168.x` address.
 
 ## Custom server config
 
