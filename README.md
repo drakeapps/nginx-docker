@@ -11,6 +11,7 @@ This is a base nginx docker image used for nearly all of my nginx deployments.
 5. Logs the requested hostname (`$host`) in the access log for multi-site visibility
 6. Brotli and gzip compression enabled by default, including precompressed assets
 7. Optional `CLOUDFLARE_TUNNEL` mode for origins reached through a Cloudflare Tunnel
+8. Optional `NGINX_LOG_TIMING` mode that adds request timings to the access log
 
 ## Compression
 
@@ -67,6 +68,53 @@ Override the list with `CLOUDFLARE_TUNNEL_TRUSTED` (space- or comma-separated CI
 > **This is opt-in on purpose.** Trusting a private peer means anything that can reach nginx from one of those ranges can forge `CF-Connecting-IP` and claim to be any client it likes. That is fine when the tunnel is the only route in. It is **not** fine when the container's port is also published to a LAN, or when another reverse proxy on the same host can reach it — there, narrow `CLOUDFLARE_TUNNEL_TRUSTED` to the tunnel's own address, or leave the mode off.
 
 Verify it took effect by checking a log line's first field after a request through the tunnel: it should be the browser's public IP, not a `172.x`/`192.168.x` address.
+
+## Request timings
+
+Set `NGINX_LOG_TIMING=1` on the container to log how long each request took:
+
+```yaml
+services:
+  web:
+    image: ghcr.io/drakeapps/nginx:latest
+    environment:
+      - NGINX_LOG_TIMING=1
+```
+
+A startup hook then switches the access log to the `cloudflare_timing` format: the `cloudflare` format with key=value pairs after `$host`.
+
+```
+203.0.113.7 - - [09/Oct/2026:14:03:11 +0000] "GET /radar/x.png HTTP/1.1" 200 5123 "-" "Mozilla/5.0" tiles.example.com rt=0.012 urt="0.011" cs=MISS st="render;dur=2.1, total;dur=10.4"
+```
+
+| Field | Meaning | `-` when |
+|---|---|---|
+| `rt` | `$request_time`: first byte read to last byte sent, in seconds with millisecond resolution. Includes sending to the client (behind a tunnel the client is `cloudflared`, so it is close to server time) | Never |
+| `urt` | `$upstream_response_time`: time waiting on the backend. Quoted, because after retries or internal redirects it is a list (`0.010, 0.004` or `0.010 : 0.004`) | nginx answered itself (static files, cache hits) |
+| `cs` | `$upstream_cache_status`: `HIT`, `MISS`, `EXPIRED`, `STALE`, `UPDATING`, `REVALIDATED`, `BYPASS` | The location has no `proxy_cache` |
+| `st` | The backend's [`Server-Timing`](https://www.w3.org/TR/server-timing/) header, quoted (a `"` inside it is logged as `\x22`) | The backend sends none |
+
+Two cases worth knowing when reading the numbers:
+
+- **A cache hit logs the cached response's `st`.** nginx stores the backend's headers with the response, so `$upstream_http_server_timing` on a `HIT` is the original render's header, while `urt` is `-`. Only count `st` on lines where `urt` isn't `-`.
+- **`proxy_cache_lock` waiters** (requests that waited for another request to fill the cache) log `cs=HIT` and `urt="-"`, with an `rt` that includes the wait. nginx checks the lock every 500 ms, so a waiter's `rt` is at least ~0.5 s, in 0.5 s steps. A slow `HIT` is a request that waited on a render.
+
+Sites that don't set it log exactly what they logged before. Because the new fields come after `$host` and the first one doesn't start with a quote, anything that parses the `cloudflare` format reads a timing line unchanged.
+
+The hook rewrites `/etc/nginx/access-log.conf`, which `nginx.conf` includes at the `http` level, rather than adding a file to `conf.d/`: a second `access_log` at the same level adds a second log instead of replacing the first, and every request would be logged twice.
+
+For a breakdown of the backend's time, have it send a `Server-Timing` header (`queue;dur=0.4, render;dur=2.1, total;dur=3.0`). nginx logs it as `st`. If the header shouldn't reach the public, hide it in the proxying location; it is still logged, because `$upstream_http_server_timing` is read from the backend's response, not from what is passed on:
+
+```nginx
+location /api/ {
+    proxy_pass http://backend:3000;
+    proxy_hide_header Server-Timing;
+}
+```
+
+Hiding it also matters with `proxy_cache`: nginx caches a response with its headers, so a cache hit would otherwise show the original request's timings.
+
+As with the `cloudflare` format, a server block that sets its own `access_log` keeps its own format whatever `NGINX_LOG_TIMING` says.
 
 ## Custom server config
 

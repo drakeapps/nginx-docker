@@ -8,6 +8,7 @@ on:
       - "Dockerfile"
       - "nginx.conf"
       - "default.conf"
+      - "access-log.conf"
       - "docker-entrypoint.d/**"
       - "CURRENT_VERSION"
       - ".github/workflows/build-nginx.yml"
